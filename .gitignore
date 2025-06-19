@@ -75,7 +75,13 @@ models/
 
 # Logs
 *.log
-logs/
+logs/airflow/
+logs/experiments/
+logs/deployment/
+logs/monitoring/
+# Keep Claude Code session logs
+!logs/claude-code-sessions/
+!logs/README.md
 
 # Secrets
 .env.local
