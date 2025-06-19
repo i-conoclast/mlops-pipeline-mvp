@@ -1,0 +1,103 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [ master ]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10.13]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+    
+    - name: Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      run: poetry install --no-interaction --no-root
+    
+    - name: Install project
+      run: poetry install --no-interaction
+    
+    - name: Run linting
+      run: |
+        poetry run black --check src/ tests/
+        poetry run isort --check-only src/ tests/
+        poetry run flake8 src/ tests/
+    
+    - name: Run tests
+      run: |
+        poetry run pytest tests/ -v --cov=src --cov-report=xml --cov-fail-under=80
+    
+    - name: Test MLflow integration
+      run: |
+        poetry run python src/experiments/mlflow_trainer.py
+    
+    - name: Test data processing
+      run: |
+        poetry run python src/data/data_processor.py
+    
+    - name: Validate Airflow DAG syntax
+      run: |
+        poetry add apache-airflow==2.7.1 --group dev
+        poetry run python -c "
+        import sys
+        sys.path.append('src')
+        from airflow.models import DagBag
+        dagbag = DagBag(dag_folder='airflow/dags', include_examples=False)
+        if len(dagbag.import_errors) > 0:
+            print('DAG import errors:', dagbag.import_errors)
+            exit(1)
+        print('✅ All DAGs validated successfully')
+        "
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+
+  security-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run security checks
+      run: |
+        # Check for secrets in code
+        if grep -r "password\|secret\|key\|token" src/ --include="*.py" | grep -v "# noqa"; then
+          echo "❌ Potential secrets found in code"
+          exit 1
+        fi
+        echo "✅ No secrets found in code"
+    
+    - name: Check file permissions
+      run: |
+        # Check for files with overly permissive permissions
+        if find . -type f -perm 777 | grep -v ".git"; then
+          echo "❌ Files with 777 permissions found"
+          exit 1
+        fi
+        echo "✅ File permissions are secure"
